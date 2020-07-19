@@ -42,6 +42,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <search.h>
 
 #include <linux/videodev2.h>
 #include <libv4l2.h>
@@ -70,6 +71,16 @@ struct v4l2_capbuf
    size_t   len;
 };
 
+struct lentry {
+   struct lentry *forward;
+   struct lentry *backward;
+   unsigned char *name;
+   int id;
+};
+
+struct lentry *v4l2_list_standards;
+struct lentry *v4l2_list_inputs;
+struct lentry *v4l2_list_pixfmts;
 /*
  * Video capture state
  */
@@ -156,6 +167,31 @@ appendstr(char *dst, const char *src, size_t dstsize)
    if (resid == 0)
       return;
    strncat(dst, src, resid);
+}
+
+struct lentry * lentry_new() {
+   struct lentry *e;
+   e = calloc(1, sizeof(struct lentry));
+   if (e == NULL) {
+      fprintf(stderr, "malloc() failed\n");
+      exit(EXIT_FAILURE);
+   }
+   return e;
+}
+
+void lentry_destroy(struct lentry *e, struct lentry **first) {
+   if (e == NULL)
+      return;
+
+   if ((e->forward == NULL) && (e->backward == NULL)) {
+      *first = NULL;
+   }
+
+   if (e == *first) {
+      *first = e->forward;
+   }
+
+   remque(e);
 }
 
 static void
@@ -1044,6 +1080,8 @@ RETRO_API bool VIDEOPROC_CORE_PREFIX(retro_load_game)(const struct retro_game_in
    uint32_t index;
    bool std_found;
    int error;
+   struct lentry *prev, *e;
+
 
    if (open_devices() == false)
    {
@@ -1060,6 +1098,10 @@ RETRO_API bool VIDEOPROC_CORE_PREFIX(retro_load_game)(const struct retro_game_in
        VIDEOPROC_CORE_PREFIX(environment_cb)(RETRO_ENVIRONMENT_SET_AUDIO_CALLBACK, &audio_cb);
    }
 #endif
+
+   e = lentry_new();
+   v4l2_list_standards = e;
+   insque(e, NULL);
 
    VIDEOPROC_CORE_PREFIX(environment_cb)(RETRO_ENVIRONMENT_GET_VARIABLE, &videodev);
    if (videodev.value == NULL) {
@@ -1175,7 +1217,13 @@ RETRO_API bool VIDEOPROC_CORE_PREFIX(retro_load_game)(const struct retro_game_in
             video_standard = std;
             std_found = true;
          }
-         printf("VIDIOC_ENUMSTD[%u]: %s%s\n", index, std.name, std.id == std_id ? " [*]" : "");
+         e->name = std.name;
+         e->id = std.id;
+         printf("VIDIOC_ENUMSTD[%u]: %s%s\n", index, e->name, e->id == std_id ? " [*]" : "");
+
+         prev = e;
+		 e = lentry_new();
+		 insque(e, prev);
       }
       if (!std_found)
       {
@@ -1338,6 +1386,11 @@ RETRO_API void VIDEOPROC_CORE_PREFIX(retro_unload_game)(void)
       if (error != 0)
          printf("VIDIOC_REQBUFS failed: %s\n", strerror(errno));
 
+   }
+
+   while (v4l2_list_standards != NULL) {
+      lentry_destroy(v4l2_list_standards, &v4l2_list_standards);
+      printf("destroyed %p\n", (void *) v4l2_list_standards);
    }
 
    if (frame_out)
